@@ -160,6 +160,15 @@ void VisitRRR(InstructionSelector* selector, ArchOpcode opcode, Node* node) {
                  g.UseRegister(node->InputAt(1)));
 }
 
+void VisitSimdShiftRRR(InstructionSelector* selector, ArchOpcode opcode,
+                       Node* node) {
+  Arm64OperandGenerator g(selector);
+  InstructionOperand temps[] = {g.TempSimd128Register()};
+  selector->Emit(opcode, g.DefineAsRegister(node),
+                 g.UseRegister(node->InputAt(0)),
+                 g.UseRegister(node->InputAt(1)), arraysize(temps), temps);
+}
+
 void VisitRRI(InstructionSelector* selector, ArchOpcode opcode, Node* node) {
   Arm64OperandGenerator g(selector);
   int32_t imm = OpParameter<int32_t>(node->op());
@@ -535,9 +544,9 @@ void InstructionSelector::VisitStackSlot(Node* node) {
        sequence()->AddImmediate(Constant(slot)), 0, nullptr);
 }
 
-void InstructionSelector::VisitDebugAbort(Node* node) {
+void InstructionSelector::VisitAbortCSAAssert(Node* node) {
   Arm64OperandGenerator g(this);
-  Emit(kArchDebugAbort, g.NoOutput(), g.UseFixed(node->InputAt(0), x1));
+  Emit(kArchAbortCSAAssert, g.NoOutput(), g.UseFixed(node->InputAt(0), x1));
 }
 
 void EmitLoad(InstructionSelector* selector, Node* node, InstructionCode opcode,
@@ -676,10 +685,11 @@ void InstructionSelector::VisitStore(Node* node) {
     InstructionOperand inputs[3];
     size_t input_count = 0;
     inputs[input_count++] = g.UseUniqueRegister(base);
-    // OutOfLineRecordWrite uses the index in an arithmetic instruction, so we
-    // must check kArithmeticImm as well as kLoadStoreImm64.
-    if (g.CanBeImmediate(index, kArithmeticImm) &&
-        g.CanBeImmediate(index, kLoadStoreImm64)) {
+    // OutOfLineRecordWrite uses the index in an add or sub instruction, but we
+    // can trust the assembler to generate extra instructions if the index does
+    // not fit into add or sub. So here only check the immediate for a store.
+    if (g.CanBeImmediate(index, COMPRESS_POINTERS_BOOL ? kLoadStoreImm32
+                                                       : kLoadStoreImm64)) {
       inputs[input_count++] = g.UseImmediate(index);
       addressing_mode = kMode_MRI;
     } else {
@@ -1599,7 +1609,7 @@ void InstructionSelector::VisitChangeUint32ToUint64(Node* node) {
       // 32-bit operations will write their result in a W register (implicitly
       // clearing the top 32-bit of the corresponding X register) so the
       // zero-extension is a no-op.
-      Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
+      EmitIdentity(node);
       return;
     }
     case IrOpcode::kLoad: {
@@ -1610,7 +1620,7 @@ void InstructionSelector::VisitChangeUint32ToUint64(Node* node) {
         case MachineRepresentation::kWord8:
         case MachineRepresentation::kWord16:
         case MachineRepresentation::kWord32:
-          Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
+          EmitIdentity(node);
           return;
         default:
           break;
@@ -1646,29 +1656,75 @@ void InstructionSelector::VisitChangeTaggedSignedToCompressedSigned(
 void InstructionSelector::VisitChangeCompressedToTagged(Node* node) {
   Arm64OperandGenerator g(this);
   Node* const value = node->InputAt(0);
-  Emit(kArm64DecompressAny, g.DefineAsRegister(node), g.UseRegister(value));
+  if ((value->opcode() == IrOpcode::kLoad ||
+       value->opcode() == IrOpcode::kPoisonedLoad) &&
+      CanCover(node, value)) {
+    DCHECK_EQ(LoadRepresentationOf(value->op()).representation(),
+              MachineRepresentation::kCompressed);
+    InstructionCode opcode = kArm64LdrDecompressAnyTagged;
+    if (value->opcode() == IrOpcode::kPoisonedLoad) {
+      CHECK_NE(poisoning_level_, PoisoningMitigationLevel::kDontPoison);
+      opcode |= MiscField::encode(kMemoryAccessPoisoned);
+    }
+    ImmediateMode immediate_mode = kLoadStoreImm32;
+    MachineRepresentation rep = MachineRepresentation::kCompressed;
+    EmitLoad(this, value, opcode, immediate_mode, rep, node);
+  } else {
+    Emit(kArm64DecompressAny, g.DefineAsRegister(node), g.UseRegister(value));
+  }
 }
 
 void InstructionSelector::VisitChangeCompressedPointerToTaggedPointer(
     Node* node) {
   Arm64OperandGenerator g(this);
   Node* const value = node->InputAt(0);
-  Emit(kArm64DecompressPointer, g.DefineAsRegister(node), g.UseRegister(value));
+  if ((value->opcode() == IrOpcode::kLoad ||
+       value->opcode() == IrOpcode::kPoisonedLoad) &&
+      CanCover(node, value)) {
+    DCHECK_EQ(LoadRepresentationOf(value->op()).representation(),
+              MachineRepresentation::kCompressedPointer);
+    InstructionCode opcode = kArm64LdrDecompressTaggedPointer;
+    if (value->opcode() == IrOpcode::kPoisonedLoad) {
+      CHECK_NE(poisoning_level_, PoisoningMitigationLevel::kDontPoison);
+      opcode |= MiscField::encode(kMemoryAccessPoisoned);
+    }
+    ImmediateMode immediate_mode = kLoadStoreImm32;
+    MachineRepresentation rep = MachineRepresentation::kCompressedPointer;
+    EmitLoad(this, value, opcode, immediate_mode, rep, node);
+  } else {
+    Emit(kArm64DecompressPointer, g.DefineAsRegister(node),
+         g.UseRegister(value));
+  }
 }
 
 void InstructionSelector::VisitChangeCompressedSignedToTaggedSigned(
     Node* node) {
   Arm64OperandGenerator g(this);
   Node* const value = node->InputAt(0);
-  Emit(kArm64DecompressSigned, g.DefineAsRegister(node), g.UseRegister(value));
+  if ((value->opcode() == IrOpcode::kLoad ||
+       value->opcode() == IrOpcode::kPoisonedLoad) &&
+      CanCover(node, value)) {
+    DCHECK_EQ(LoadRepresentationOf(value->op()).representation(),
+              MachineRepresentation::kCompressedSigned);
+    InstructionCode opcode = kArm64LdrDecompressTaggedSigned;
+    if (value->opcode() == IrOpcode::kPoisonedLoad) {
+      CHECK_NE(poisoning_level_, PoisoningMitigationLevel::kDontPoison);
+      opcode |= MiscField::encode(kMemoryAccessPoisoned);
+    }
+    ImmediateMode immediate_mode = kLoadStoreImm32;
+    MachineRepresentation rep = MachineRepresentation::kCompressedSigned;
+    EmitLoad(this, value, opcode, immediate_mode, rep, node);
+  } else {
+    Emit(kArm64DecompressSigned, g.DefineAsRegister(node),
+         g.UseRegister(value));
+  }
 }
 
 void InstructionSelector::VisitTruncateInt64ToInt32(Node* node) {
   Arm64OperandGenerator g(this);
-  Node* value = node->InputAt(0);
   // The top 32 bits in the 64-bit register will be undefined, and
   // must not be used by a dependent node.
-  Emit(kArchNop, g.DefineSameAsFirst(node), g.UseRegister(value));
+  EmitIdentity(node);
 }
 
 void InstructionSelector::VisitFloat64Mod(Node* node) {
@@ -2451,7 +2507,7 @@ void InstructionSelector::VisitSwitch(Node* node, const SwitchInfo& sw) {
     size_t table_time_cost = 3;
     size_t lookup_space_cost = 3 + 2 * sw.case_count();
     size_t lookup_time_cost = sw.case_count();
-    if (sw.case_count() > 0 &&
+    if (sw.case_count() > 4 &&
         table_space_cost + 3 * table_time_cost <=
             lookup_space_cost + 3 * lookup_time_cost &&
         sw.min_value() > std::numeric_limits<int32_t>::min() &&
@@ -2755,6 +2811,11 @@ void InstructionSelector::VisitFloat64Mul(Node* node) {
   return VisitRRR(this, kArm64Float64Mul, node);
 }
 
+void InstructionSelector::VisitMemoryBarrier(Node* node) {
+  Arm64OperandGenerator g(this);
+  Emit(kArm64DmbIsh, g.NoOutput());
+}
+
 void InstructionSelector::VisitWord32AtomicLoad(Node* node) {
   LoadRepresentation load_rep = LoadRepresentationOf(node->op());
   ArchOpcode opcode = kArchNop;
@@ -2994,6 +3055,7 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
 
 #define SIMD_TYPE_LIST(V) \
   V(F32x4)                \
+  V(I64x2)                \
   V(I32x4)                \
   V(I16x8)                \
   V(I8x16)
@@ -3005,6 +3067,7 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(F32x4Neg, kArm64F32x4Neg)                             \
   V(F32x4RecipApprox, kArm64F32x4RecipApprox)             \
   V(F32x4RecipSqrtApprox, kArm64F32x4RecipSqrtApprox)     \
+  V(I64x2Neg, kArm64I64x2Neg)                             \
   V(I32x4SConvertF32x4, kArm64I32x4SConvertF32x4)         \
   V(I32x4SConvertI16x8Low, kArm64I32x4SConvertI16x8Low)   \
   V(I32x4SConvertI16x8High, kArm64I32x4SConvertI16x8High) \
@@ -3019,6 +3082,8 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I16x8UConvertI8x16High, kArm64I16x8UConvertI8x16High) \
   V(I8x16Neg, kArm64I8x16Neg)                             \
   V(S128Not, kArm64S128Not)                               \
+  V(S1x2AnyTrue, kArm64S1x2AnyTrue)                       \
+  V(S1x2AllTrue, kArm64S1x2AllTrue)                       \
   V(S1x4AnyTrue, kArm64S1x4AnyTrue)                       \
   V(S1x4AllTrue, kArm64S1x4AllTrue)                       \
   V(S1x8AnyTrue, kArm64S1x8AnyTrue)                       \
@@ -3027,6 +3092,9 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(S1x16AllTrue, kArm64S1x16AllTrue)
 
 #define SIMD_SHIFT_OP_LIST(V) \
+  V(I64x2Shl)                 \
+  V(I64x2ShrS)                \
+  V(I64x2ShrU)                \
   V(I32x4Shl)                 \
   V(I32x4ShrS)                \
   V(I32x4ShrU)                \
@@ -3048,6 +3116,14 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(F32x4Ne, kArm64F32x4Ne)                       \
   V(F32x4Lt, kArm64F32x4Lt)                       \
   V(F32x4Le, kArm64F32x4Le)                       \
+  V(I64x2Add, kArm64I64x2Add)                     \
+  V(I64x2Sub, kArm64I64x2Sub)                     \
+  V(I64x2Eq, kArm64I64x2Eq)                       \
+  V(I64x2Ne, kArm64I64x2Ne)                       \
+  V(I64x2GtS, kArm64I64x2GtS)                     \
+  V(I64x2GeS, kArm64I64x2GeS)                     \
+  V(I64x2GtU, kArm64I64x2GtU)                     \
+  V(I64x2GeU, kArm64I64x2GeU)                     \
   V(I32x4Add, kArm64I32x4Add)                     \
   V(I32x4AddHoriz, kArm64I32x4AddHoriz)           \
   V(I32x4Sub, kArm64I32x4Sub)                     \
@@ -3142,7 +3218,7 @@ SIMD_UNOP_LIST(SIMD_VISIT_UNOP)
 
 #define SIMD_VISIT_SHIFT_OP(Name)                     \
   void InstructionSelector::Visit##Name(Node* node) { \
-    VisitRRI(this, kArm64##Name, node);               \
+    VisitSimdShiftRRR(this, kArm64##Name, node);      \
   }
 SIMD_SHIFT_OP_LIST(SIMD_VISIT_SHIFT_OP)
 #undef SIMD_VISIT_SHIFT_OP

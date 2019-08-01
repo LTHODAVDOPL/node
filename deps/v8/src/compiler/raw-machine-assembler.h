@@ -65,9 +65,10 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   CallDescriptor* call_descriptor() const { return call_descriptor_; }
   PoisoningMitigationLevel poisoning_level() const { return poisoning_level_; }
 
-  // Finalizes the schedule and exports it to be used for code generation. Note
-  // that this RawMachineAssembler becomes invalid after export.
-  Schedule* Export();
+  // Only used for tests: Finalizes the schedule and exports it to be used for
+  // code generation. Note that this RawMachineAssembler becomes invalid after
+  // export.
+  Schedule* ExportForTest();
   // Finalizes the schedule and transforms it into a graph that's suitable for
   // it to be used for Turbofan optimization and re-scheduling. Note that this
   // RawMachineAssembler becomes invalid after export.
@@ -732,6 +733,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   Node* BitcastTaggedToWord(Node* a) {
       return AddNode(machine()->BitcastTaggedToWord(), a);
   }
+  Node* BitcastTaggedSignedToWord(Node* a) {
+    return AddNode(machine()->BitcastTaggedSignedToWord(), a);
+  }
   Node* BitcastMaybeObjectToWord(Node* a) {
       return AddNode(machine()->BitcastMaybeObjectToWord(), a);
   }
@@ -1016,7 +1020,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   void PopAndReturn(Node* pop, Node* v1, Node* v2, Node* v3, Node* v4);
   void Bind(RawMachineLabel* label);
   void Deoptimize(Node* state);
-  void DebugAbort(Node* message);
+  void AbortCSAAssert(Node* message);
   void DebugBreak();
   void Unreachable();
   void Comment(const std::string& msg);
@@ -1087,6 +1091,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
 
   Schedule* schedule() { return schedule_; }
   size_t parameter_count() const { return call_descriptor_->ParameterCount(); }
+
+  static void OptimizeControlFlow(Schedule* schedule, Graph* graph,
+                                  CommonOperatorBuilder* common);
 
   Isolate* isolate_;
   Graph* graph_;

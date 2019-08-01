@@ -76,26 +76,10 @@ Builtin* DeclarationVisitor::CreateBuiltin(BuiltinDeclaration* decl,
   Builtin::Kind kind = !javascript ? Builtin::kStub
                                    : varargs ? Builtin::kVarArgsJavaScript
                                              : Builtin::kFixedArgsJavaScript;
-  const Type* context_type =
-      Declarations::LookupGlobalType(CONTEXT_TYPE_STRING);
-  if (signature.types().size() == 0 ||
-      !(signature.types()[0] == context_type)) {
-    Error("First parameter to builtin ", decl->name, " must be of type ",
-          *context_type);
-  }
 
   if (varargs && !javascript) {
     Error("Rest parameters require ", decl->name,
           " to be a JavaScript builtin");
-  }
-
-  if (javascript) {
-    if (signature.types().size() >= 2 &&
-        !(signature.types()[1] ==
-          Declarations::LookupGlobalType(OBJECT_TYPE_STRING))) {
-      Error("Second parameter to javascript builtin ", decl->name, " is ",
-            *signature.types()[1], " but should be Object");
-    }
   }
 
   for (size_t i = 0; i < signature.types().size(); ++i) {
@@ -136,8 +120,7 @@ void DeclarationVisitor::Visit(ExternalRuntimeDeclaration* decl,
                                const Signature& signature,
                                base::Optional<Statement*> body) {
   if (signature.parameter_types.types.size() == 0 ||
-      !(signature.parameter_types.types[0] ==
-        Declarations::LookupGlobalType(CONTEXT_TYPE_STRING))) {
+      !(signature.parameter_types.types[0] == TypeOracle::GetContextType())) {
     ReportError(
         "first parameter to runtime functions has to be the context and have "
         "type Context, but found type ",
@@ -222,7 +205,7 @@ void DeclarationVisitor::Visit(SpecializationDeclaration* decl) {
       TypeVisitor::MakeSignature(decl->signature.get());
   for (Generic* generic : generic_list) {
     Signature generic_signature_with_types =
-        MakeSpecializedSignature(SpecializationKey{
+        MakeSpecializedSignature(SpecializationKey<Generic>{
             generic, TypeVisitor::ComputeTypeVector(decl->generic_parameters)});
     if (signature_with_types.HasSameTypesAs(generic_signature_with_types,
                                             ParameterMode::kIgnoreImplicit)) {
@@ -250,7 +233,7 @@ void DeclarationVisitor::Visit(SpecializationDeclaration* decl) {
     stream << "\ncandidates are:";
     for (Generic* generic : generic_list) {
       stream << "\n  "
-             << MakeSpecializedSignature(SpecializationKey{
+             << MakeSpecializedSignature(SpecializationKey<Generic>{
                     generic,
                     TypeVisitor::ComputeTypeVector(decl->generic_parameters)});
     }
@@ -262,8 +245,9 @@ void DeclarationVisitor::Visit(SpecializationDeclaration* decl) {
                                       matching_generic->IdentifierPosition());
   }
 
-  Specialize(SpecializationKey{matching_generic, TypeVisitor::ComputeTypeVector(
-                                                     decl->generic_parameters)},
+  Specialize(SpecializationKey<Generic>{matching_generic,
+                                        TypeVisitor::ComputeTypeVector(
+                                            decl->generic_parameters)},
              matching_generic->declaration()->callable, decl->signature.get(),
              decl->body, decl->pos);
 }
@@ -284,7 +268,8 @@ void DeclarationVisitor::Visit(CppIncludeDeclaration* decl) {
   GlobalContext::AddCppInclude(decl->include_path);
 }
 
-void DeclarationVisitor::DeclareSpecializedTypes(const SpecializationKey& key) {
+void DeclarationVisitor::DeclareSpecializedTypes(
+    const SpecializationKey<Generic>& key) {
   size_t i = 0;
   const std::size_t generic_parameter_count =
       key.generic->declaration()->generic_parameters.size();
@@ -305,7 +290,7 @@ void DeclarationVisitor::DeclareSpecializedTypes(const SpecializationKey& key) {
 }
 
 Signature DeclarationVisitor::MakeSpecializedSignature(
-    const SpecializationKey& key) {
+    const SpecializationKey<Generic>& key) {
   CurrentScope::Scope generic_scope(key.generic->ParentScope());
   // Create a temporary fake-namespace just to temporarily declare the
   // specialization aliases for the generic types to create a signature.
@@ -316,7 +301,8 @@ Signature DeclarationVisitor::MakeSpecializedSignature(
       key.generic->declaration()->callable->signature.get());
 }
 
-Callable* DeclarationVisitor::SpecializeImplicit(const SpecializationKey& key) {
+Callable* DeclarationVisitor::SpecializeImplicit(
+    const SpecializationKey<Generic>& key) {
   if (!key.generic->declaration()->body &&
       IntrinsicDeclaration::DynamicCast(key.generic->declaration()->callable) ==
           nullptr) {
@@ -335,7 +321,7 @@ Callable* DeclarationVisitor::SpecializeImplicit(const SpecializationKey& key) {
 }
 
 Callable* DeclarationVisitor::Specialize(
-    const SpecializationKey& key, CallableNode* declaration,
+    const SpecializationKey<Generic>& key, CallableNode* declaration,
     base::Optional<const CallableNodeSignature*> signature,
     base::Optional<Statement*> body, SourcePosition position) {
   CurrentSourcePosition::Scope pos_scope(position);
@@ -350,7 +336,7 @@ Callable* DeclarationVisitor::Specialize(
            << std::to_string(generic_parameter_count) << ")";
     ReportError(stream.str());
   }
-  if (key.generic->GetSpecialization(key.specialized_types)) {
+  if (key.generic->specializations().Get(key.specialized_types)) {
     ReportError("cannot redeclare specialization of ", key.generic->name(),
                 " with types <", key.specialized_types, ">");
   }
@@ -381,7 +367,7 @@ Callable* DeclarationVisitor::Specialize(
     callable = CreateBuiltin(builtin, generated_name, readable_name.str(),
                              type_signature, *body);
   }
-  key.generic->AddSpecialization(key.specialized_types, callable);
+  key.generic->specializations().Add(key.specialized_types, callable);
   return callable;
 }
 

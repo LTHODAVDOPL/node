@@ -134,6 +134,7 @@ Address GenerateJumpTableThunk(
 
   CodeDesc desc;
   masm.GetCode(nullptr, &desc);
+  FlushInstructionCache(buffer, desc.instr_size);
   return reinterpret_cast<Address>(buffer);
 }
 
@@ -224,7 +225,7 @@ TEST(JumpTablePatchingStress) {
   Address slot_start = reinterpret_cast<Address>(buffer->start());
   for (int slot = 0; slot < kJumpTableSlotCount; ++slot) {
     TRACE("Hammering on jump table slot #%d ...\n", slot);
-    uint32_t slot_offset = JumpTableAssembler::SlotIndexToOffset(slot);
+    uint32_t slot_offset = JumpTableAssembler::JumpSlotIndexToOffset(slot);
     std::vector<std::unique_ptr<TestingAssemblerBuffer>> thunk_buffers;
     Address thunk1 =
         GenerateJumpTableThunk(slot_start + slot_offset, thunk_slot_buffer,
@@ -246,8 +247,8 @@ TEST(JumpTablePatchingStress) {
     }
     JumpTablePatcher patcher(slot_start, slot, thunk1, thunk2);
     global_stop_bit = 0;  // Signal runners to keep going.
-    for (auto& runner : runners) runner.Start();
-    patcher.Start();
+    for (auto& runner : runners) CHECK(runner.Start());
+    CHECK(patcher.Start());
     patcher.Join();
     global_stop_bit = -1;  // Signal runners to stop.
     for (auto& runner : runners) runner.Join();

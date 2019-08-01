@@ -37,6 +37,13 @@ class PredeclarationVisitor {
   static void Predeclare(TypeDeclaration* decl) {
     Declarations::PredeclareTypeAlias(decl->name, decl, false);
   }
+  static void Predeclare(StructDeclaration* decl) {
+    if (decl->IsGeneric()) {
+      Declarations::DeclareGenericStructType(decl->name->value, decl);
+    } else {
+      Declarations::PredeclareTypeAlias(decl->name, decl, false);
+    }
+  }
   static void Predeclare(GenericDeclaration* decl) {
     Declarations::DeclareGeneric(decl->callable->name, decl);
   }
@@ -58,6 +65,11 @@ class DeclarationVisitor {
     // Looking up the type will trigger type computation; this ensures errors
     // are reported even if the type is unused.
     Declarations::LookupType(decl->name);
+  }
+  static void Visit(StructDeclaration* decl) {
+    if (!decl->IsGeneric()) {
+      Declarations::LookupType(decl->name);
+    }
   }
 
   static Builtin* CreateBuiltin(BuiltinDeclaration* decl,
@@ -95,15 +107,16 @@ class DeclarationVisitor {
   static void Visit(ExternConstDeclaration* decl);
   static void Visit(CppIncludeDeclaration* decl);
 
-  static Signature MakeSpecializedSignature(const SpecializationKey& key);
-  static Callable* SpecializeImplicit(const SpecializationKey& key);
+  static Signature MakeSpecializedSignature(
+      const SpecializationKey<Generic>& key);
+  static Callable* SpecializeImplicit(const SpecializationKey<Generic>& key);
   static Callable* Specialize(
-      const SpecializationKey& key, CallableNode* declaration,
+      const SpecializationKey<Generic>& key, CallableNode* declaration,
       base::Optional<const CallableNodeSignature*> signature,
       base::Optional<Statement*> body, SourcePosition position);
 
  private:
-  static void DeclareSpecializedTypes(const SpecializationKey& key);
+  static void DeclareSpecializedTypes(const SpecializationKey<Generic>& key);
 };
 
 }  // namespace torque

@@ -1875,11 +1875,7 @@ void TurboAssembler::Call(Handle<Code> code_object, RelocInfo::Mode rmode) {
     if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin_index) &&
         Builtins::IsIsolateIndependent(builtin_index)) {
       // Inline the trampoline.
-      RecordCommentForOffHeapTrampoline(builtin_index);
-      CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
-      call(entry, RelocInfo::OFF_HEAP_TARGET);
+      CallBuiltin(builtin_index);
       return;
     }
   }
@@ -1887,20 +1883,34 @@ void TurboAssembler::Call(Handle<Code> code_object, RelocInfo::Mode rmode) {
   call(code_object, rmode);
 }
 
-void TurboAssembler::CallBuiltinPointer(Register builtin_pointer) {
+void TurboAssembler::LoadEntryFromBuiltinIndex(Register builtin_index) {
   STATIC_ASSERT(kSystemPointerSize == 4);
   STATIC_ASSERT(kSmiShiftSize == 0);
   STATIC_ASSERT(kSmiTagSize == 1);
   STATIC_ASSERT(kSmiTag == 0);
 
-  // The builtin_pointer register contains the builtin index as a Smi.
+  // The builtin_index register contains the builtin index as a Smi.
   // Untagging is folded into the indexing operand below (we use
   // times_half_system_pointer_size instead of times_system_pointer_size since
   // smis are already shifted by one).
-  mov(builtin_pointer,
-      Operand(kRootRegister, builtin_pointer, times_half_system_pointer_size,
+  mov(builtin_index,
+      Operand(kRootRegister, builtin_index, times_half_system_pointer_size,
               IsolateData::builtin_entry_table_offset()));
-  call(builtin_pointer);
+}
+
+void TurboAssembler::CallBuiltinByIndex(Register builtin_index) {
+  LoadEntryFromBuiltinIndex(builtin_index);
+  call(builtin_index);
+}
+
+void TurboAssembler::CallBuiltin(int builtin_index) {
+  DCHECK(Builtins::IsBuiltinId(builtin_index));
+  DCHECK(FLAG_embedded_builtins);
+  RecordCommentForOffHeapTrampoline(builtin_index);
+  CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+  EmbeddedData d = EmbeddedData::FromBlob();
+  Address entry = d.InstructionStartOfBuiltin(builtin_index);
+  call(entry, RelocInfo::OFF_HEAP_TARGET);
 }
 
 void TurboAssembler::LoadCodeObjectEntry(Register destination,

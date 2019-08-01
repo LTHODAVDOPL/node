@@ -102,6 +102,15 @@ void VisitRRR(InstructionSelector* selector, ArchOpcode opcode, Node* node) {
                  g.UseRegister(node->InputAt(1)));
 }
 
+void VisitSimdShiftRRR(InstructionSelector* selector, ArchOpcode opcode,
+                       Node* node) {
+  ArmOperandGenerator g(selector);
+  InstructionOperand temps[] = {g.TempSimd128Register()};
+  selector->Emit(opcode, g.DefineAsRegister(node),
+                 g.UseRegister(node->InputAt(0)),
+                 g.UseRegister(node->InputAt(1)), arraysize(temps), temps);
+}
+
 void VisitRRRShuffle(InstructionSelector* selector, ArchOpcode opcode,
                      Node* node) {
   ArmOperandGenerator g(selector);
@@ -441,9 +450,9 @@ void InstructionSelector::VisitStackSlot(Node* node) {
        sequence()->AddImmediate(Constant(slot)), 0, nullptr);
 }
 
-void InstructionSelector::VisitDebugAbort(Node* node) {
+void InstructionSelector::VisitAbortCSAAssert(Node* node) {
   ArmOperandGenerator g(this);
-  Emit(kArchDebugAbort, g.NoOutput(), g.UseFixed(node->InputAt(0), r1));
+  Emit(kArchAbortCSAAssert, g.NoOutput(), g.UseFixed(node->InputAt(0), r1));
 }
 
 void InstructionSelector::VisitLoad(Node* node) {
@@ -2020,6 +2029,11 @@ void InstructionSelector::VisitFloat64InsertHighWord32(Node* node) {
        g.UseRegister(right));
 }
 
+void InstructionSelector::VisitMemoryBarrier(Node* node) {
+  ArmOperandGenerator g(this);
+  Emit(kArmDmbIsh, g.NoOutput());
+}
+
 void InstructionSelector::VisitWord32AtomicLoad(Node* node) {
   LoadRepresentation load_rep = LoadRepresentationOf(node->op());
   ArmOperandGenerator g(this);
@@ -2483,7 +2497,7 @@ SIMD_UNOP_LIST(SIMD_VISIT_UNOP)
 
 #define SIMD_VISIT_SHIFT_OP(Name)                     \
   void InstructionSelector::Visit##Name(Node* node) { \
-    VisitRRI(this, kArm##Name, node);                 \
+    VisitSimdShiftRRR(this, kArm##Name, node);        \
   }
 SIMD_SHIFT_OP_LIST(SIMD_VISIT_SHIFT_OP)
 #undef SIMD_VISIT_SHIFT_OP

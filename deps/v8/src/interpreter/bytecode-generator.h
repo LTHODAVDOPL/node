@@ -84,6 +84,8 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
                                            Register object,
                                            const AstRawString* name);
     static AssignmentLhsData KeyedProperty(Register object, Register key);
+    static AssignmentLhsData PrivateMethodOrAccessor(AssignType type,
+                                                     Property* property);
     static AssignmentLhsData NamedSuperProperty(
         RegisterList super_property_args);
     static AssignmentLhsData KeyedSuperProperty(
@@ -91,7 +93,10 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 
     AssignType assign_type() const { return assign_type_; }
     Expression* expr() const {
-      DCHECK_EQ(assign_type_, NON_PROPERTY);
+      DCHECK(assign_type_ == NON_PROPERTY || assign_type_ == PRIVATE_METHOD ||
+             assign_type_ == PRIVATE_GETTER_ONLY ||
+             assign_type_ == PRIVATE_SETTER_ONLY ||
+             assign_type_ == PRIVATE_GETTER_AND_SETTER);
       return expr_;
     }
     Expression* object_expr() const {
@@ -103,11 +108,11 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
       return object_;
     }
     Register key() const {
-      DCHECK_EQ(assign_type_, KEYED_PROPERTY);
+      DCHECK(assign_type_ == KEYED_PROPERTY);
       return key_;
     }
     const AstRawString* name() const {
-      DCHECK_EQ(assign_type_, NAMED_PROPERTY);
+      DCHECK(assign_type_ == NAMED_PROPERTY);
       return name_;
     }
     RegisterList super_property_args() const {
@@ -135,7 +140,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
     //
     // NON_PROPERTY: expr
     // NAMED_PROPERTY: object_expr, object, name
-    // KEYED_PROPERTY: object, key
+    // KEYED_PROPERTY, PRIVATE_METHOD: object, key
     // NAMED_SUPER_PROPERTY: super_property_args
     // KEYED_SUPER_PROPERT:  super_property_args
     Expression* expr_;
@@ -238,8 +243,9 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 
   // Build jump to targets[value], where
   // start_index <= value < start_index + size.
-  void BuildIndexedJump(Register value, size_t start_index, size_t size,
-                        ZoneVector<BytecodeLabel>& targets);
+  void BuildIndexedJump(
+      Register value, size_t start_index, size_t size,
+      ZoneVector<BytecodeLabel>& targets);  // NOLINT(runtime/references)
 
   void BuildNewLocalActivationContext();
   void BuildLocalActivationContextInitialization();
@@ -291,6 +297,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   void VisitArgumentsObject(Variable* variable);
   void VisitRestArgumentsArray(Variable* rest);
   void VisitCallSuper(Call* call);
+  void BuildThrowPrivateMethodWriteError(const AstRawString* name);
   void BuildPrivateClassMemberNameAssignment(ClassLiteral::Property* property);
   void BuildClassLiteral(ClassLiteral* expr, Register name);
   void VisitClassLiteral(ClassLiteral* expr, Register name);

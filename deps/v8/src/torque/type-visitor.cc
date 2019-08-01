@@ -57,6 +57,12 @@ const AbstractType* TypeVisitor::ComputeType(AbstractTypeDeclaration* decl) {
   const Type* parent_type = nullptr;
   if (decl->extends) {
     parent_type = Declarations::LookupType(*decl->extends);
+    if (parent_type->IsUnionType()) {
+      // UnionType::IsSupertypeOf requires that types can only extend from non-
+      // union types in order to work correctly.
+      ReportError("type \"", decl->name->value,
+                  "\" cannot extend a type union");
+    }
   }
 
   if (generates == "" && parent_type) {
@@ -104,9 +110,12 @@ void DeclareMethods(AggregateType* container_type,
   }
 }
 
-const StructType* TypeVisitor::ComputeType(StructDeclaration* decl) {
+const StructType* TypeVisitor::ComputeType(
+    StructDeclaration* decl,
+    StructType::MaybeSpecializationKey specialized_from) {
   CurrentSourcePosition::Scope position_activator(decl->pos);
-  StructType* struct_type = TypeOracle::GetStructType(decl->name->value);
+  StructType* struct_type =
+      TypeOracle::GetStructType(decl->name->value, specialized_from);
   size_t offset = 0;
   for (auto& field : decl->fields) {
     CurrentSourcePosition::Scope position_activator(
@@ -156,36 +165,56 @@ const ClassType* TypeVisitor::ComputeType(ClassDeclaration* decl) {
     new_class = TypeOracle::GetClassType(super_type, decl->name->value,
                                          decl->flags, generates, decl, alias);
   } else {
-    if (decl->super) {
-      ReportError("Only extern classes can inherit.");
+    if (!decl->super) {
+      ReportError("Intern class ", decl->name->value,
+                  " must extend class Struct.");
+    }
+    const Type* super_type = TypeVisitor::ComputeType(*decl->super);
+    const ClassType* super_class = ClassType::DynamicCast(super_type);
+    const Type* struct_type = Declarations::LookupGlobalType("Struct");
+    if (!super_class || super_class != struct_type) {
+      ReportError("Intern class ", decl->name->value,
+                  " must extend class Struct.");
     }
     if (decl->generates) {
       ReportError("Only extern classes can specify a generated type.");
     }
-    new_class =
-        TypeOracle::GetClassType(TypeOracle::GetTaggedType(), decl->name->value,
-                                 decl->flags, "FixedArray", decl, alias);
+    new_class = TypeOracle::GetClassType(
+        super_type, decl->name->value,
+        decl->flags | ClassFlag::kGeneratePrint | ClassFlag::kGenerateVerify,
+        decl->name->value, decl, alias);
   }
   return new_class;
 }
 
 const Type* TypeVisitor::ComputeType(TypeExpression* type_expression) {
   if (auto* basic = BasicTypeExpression::DynamicCast(type_expression)) {
-    const TypeAlias* alias = Declarations::LookupTypeAlias(
-        QualifiedName{basic->namespace_qualification, basic->name});
-    if (GlobalContext::collect_language_server_data()) {
-      LanguageServerData::AddDefinition(type_expression->pos,
-                                        alias->GetDeclarationPosition());
+    QualifiedName qualified_name{basic->namespace_qualification, basic->name};
+    auto& args = basic->generic_arguments;
+    const Type* type;
+    SourcePosition pos = SourcePosition::Invalid();
+
+    if (args.empty()) {
+      auto* alias = Declarations::LookupTypeAlias(qualified_name);
+      type = alias->type();
+      pos = alias->GetDeclarationPosition();
+    } else {
+      auto* generic_struct =
+          Declarations::LookupUniqueGenericStructType(qualified_name);
+      type = TypeOracle::GetGenericStructTypeInstance(generic_struct,
+                                                      ComputeTypeVector(args));
+      pos = generic_struct->declaration()->name->pos;
     }
-    return alias->type();
+
+    if (GlobalContext::collect_language_server_data()) {
+      LanguageServerData::AddDefinition(type_expression->pos, pos);
+    }
+    return type;
+
   } else if (auto* union_type =
                  UnionTypeExpression::DynamicCast(type_expression)) {
     return TypeOracle::GetUnionType(ComputeType(union_type->a),
                                     ComputeType(union_type->b));
-  } else if (auto* reference_type =
-                 ReferenceTypeExpression::DynamicCast(type_expression)) {
-    return TypeOracle::GetReferenceType(
-        ComputeType(reference_type->referenced_type));
   } else {
     auto* function_type_exp = FunctionTypeExpression::cast(type_expression);
     TypeVector argument_types;
